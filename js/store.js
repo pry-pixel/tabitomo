@@ -155,6 +155,8 @@ async function initCloud(onIdentityChange) {
       off(); resolve();
     });
   });
+  // 認証が使えない（Firebase側の設定が未完了など）場合はローカルモードへフォールバック
+  if (!auth.currentUser) throw new Error('Firebase Authが未設定のためローカルモードで起動します');
   onAuthStateChanged(auth, () => onIdentityChange && onIdentityChange());
 
   const store = {
