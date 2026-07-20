@@ -541,8 +541,8 @@ async function initMapG(el, pts) {
     const pin = document.createElement('div');
     pin.className = 'pin';
     pin.innerHTML = `<div class="pin-in cat-${esc(p.cat || 'star')}">${c.e}</div>`;
-    const mk = new AdvancedMarkerElement({ map: m, position: { lat: p.lat, lng: p.lng }, content: pin, title: p.name });
-    mk.addListener('click', () => { iw.setContent(placePopHtml(p)); iw.open({ map: m, anchor: mk }); });
+    const mk = new AdvancedMarkerElement({ map: m, position: { lat: p.lat, lng: p.lng }, content: pin, title: p.name, gmpClickable: true });
+    mk.addEventListener('gmp-click', () => { iw.setContent(placePopHtml(p)); iw.open({ map: m, anchor: mk }); });
     mapMarkers.push(mk);
   });
   if (!S.mapState && pts.length === 1) {

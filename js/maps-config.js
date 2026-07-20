@@ -4,5 +4,5 @@
 // 空のままの間は、従来の OpenStreetMap 地図で動作します。
 // ※このキーはサイト制限（リファラ制限）を掛けて公開する前提のキーです。
 window.TABITOMO_MAPS = {
-  apiKey: '',
+  apiKey: 'AIzaSyBPXeS9d9A5Ds3l_9v9tVbbUg94zoPIBPc',
 };
