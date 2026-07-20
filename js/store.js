@@ -234,11 +234,10 @@ async function initCloud(onIdentityChange) {
     async createTrip(t) {
       const id = newId();
       const uid = this.uid;
-      const batch = writeBatch(fdb);
-      batch.set(doc(fdb, 'trips', id), { ...t, ownerUid: uid, createdAt: Date.now(), updatedAt: Date.now() });
-      batch.set(doc(fdb, 'users', uid, 'tripRefs', id), { addedAt: Date.now() });
-      batch.set(doc(fdb, 'trips', id, 'members', uid), { name: this.identity.name, joinedAt: Date.now() });
-      await batch.commit();
+      // ルールのget()が旅行本体を参照するため、本体→サブの順で書き込む（同一バッチ不可）
+      await setDoc(doc(fdb, 'trips', id), { ...t, ownerUid: uid, createdAt: Date.now(), updatedAt: Date.now() });
+      await setDoc(doc(fdb, 'users', uid, 'tripRefs', id), { addedAt: Date.now() });
+      await setDoc(doc(fdb, 'trips', id, 'members', uid), { name: this.identity.name, joinedAt: Date.now() });
       return id;
     },
     async updateTrip(id, patch) {
