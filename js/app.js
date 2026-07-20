@@ -54,6 +54,7 @@ const S = {
 };
 let subs = [];
 let map = null, mapMarkers = [];
+let pickMap = null, pickCtx = null;
 
 /* ---------------- ユーティリティ ---------------- */
 const $ = (sel) => document.querySelector(sel);
@@ -543,6 +544,7 @@ function initMap() {
 
 /* ---------------- シート（モーダル） ---------------- */
 function openSheet(html, opts = {}) {
+  if (pickMap) { try { pickMap.remove(); } catch { } pickMap = null; }
   const wrap = $('#sheets');
   // 入力フォームは誤タップで消えないよう、背景タップでは閉じない（dismissible指定時のみ閉じる）
   wrap.innerHTML = `
@@ -551,6 +553,7 @@ function openSheet(html, opts = {}) {
   document.body.classList.add('sheet-open');
 }
 function closeSheet() {
+  if (pickMap) { try { pickMap.remove(); } catch { } pickMap = null; }
   $('#sheets').innerHTML = '';
   document.body.classList.remove('sheet-open');
   S.geoResults = []; S.csv = null;
@@ -652,12 +655,12 @@ function openEventSheet(ev, prefill = {}) {
 
 /* ----- 場所シート ----- */
 function openPlaceSheet(place, prefill = {}) {
-  const p = place || {
-    name: prefill.name || '', memo: prefill.memo || '', cat: prefill.cat || 'spot',
-    url: prefill.url || '', lat: prefill.lat ?? null, lng: prefill.lng ?? null,
+  const p = {
+    ...(place || { name: '', memo: '', cat: 'spot', url: '', lat: null, lng: null }),
+    ...prefill,
   };
   openSheet(`
-  <form id="form-place" data-id="${place ? esc(place.id) : ''}" data-lat="${p.lat ?? ''}" data-lng="${p.lng ?? ''}">
+  <form id="form-place" data-id="${place ? esc(place.id) : ''}">
     <div class="sheet-head"><h2>${place ? 'ばしょを編集' : 'ばしょを追加 📍'}</h2>
       <button type="button" class="xbtn" data-action="close-sheet">✕</button></div>
     <label class="field"><span>名前<em>必須</em></span>
@@ -667,8 +670,12 @@ function openPlaceSheet(place, prefill = {}) {
       </div>
       <small class="note">「検索」で名前から地図上の位置を取得できます</small></label>
     <div id="geo-results"></div>
-    <div class="field"><span>位置情報</span>
-      <div class="pos-badge" id="pos-badge">${p.lat != null ? `✅ 取得済み（${p.lat}, ${p.lng}）` : '─ 未取得（検索やリンク取り込みで設定）'}</div></div>
+    <label class="field"><span>位置（緯度, 経度）</span>
+      <div class="row gap">
+        <input name="coord" class="grow" placeholder="例：36.5624, 136.6623" value="${p.lat != null ? `${p.lat}, ${p.lng}` : ''}">
+        <button type="button" class="btn" data-action="pick-on-map">🗺️ 地図で指定</button>
+      </div>
+      <small class="note">検索で見つからないときは「地図で指定」か、座標の貼り付けでも設定できます（空にすると位置を消せます）</small></label>
     <label class="field"><span>カテゴリ</span>
       <select name="cat">${CATS.map((c) => `<option value="${c.k}" ${p.cat === c.k ? 'selected' : ''}>${c.e} ${c.l}</option>`).join('')}</select></label>
     <label class="field"><span>メモ</span>
@@ -680,6 +687,47 @@ function openPlaceSheet(place, prefill = {}) {
       ${place ? `<button class="btn btn-danger" type="button" data-action="del-place" data-id="${esc(place.id)}">削除</button>` : ''}
     </div>
   </form>`);
+}
+
+/* ----- 地図で位置を指定するシート ----- */
+function openMapPickSheet(place, snap) {
+  openSheet(`
+  <div class="sheet-head"><h2>地図で位置を指定 🗺️</h2>
+    <button type="button" class="xbtn" data-action="pick-map-cancel">✕</button></div>
+  <div id="pickmap" class="mapbox pickmap"></div>
+  <p class="map-hint">地図をタップしてピンを置いてください（ピンはドラッグでも動かせます）</p>
+  <button class="btn btn-primary btn-block" id="pick-map-ok" data-action="pick-map-ok" ${snap.lat != null ? '' : 'disabled'}>この位置にする</button>`);
+  pickCtx = { place, snap, lat: snap.lat, lng: snap.lng };
+  if (typeof L === 'undefined') return;
+  pickMap = L.map('pickmap', { doubleClickZoom: false });
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors',
+  }).addTo(pickMap);
+  // まわりの場所を薄く表示して目印にする
+  const pts = S.places.filter((x) => x.lat != null && x.lng != null && (!place || x.id !== place.id));
+  pts.forEach((x) => L.circleMarker([x.lat, x.lng], {
+    radius: 6, color: '#FF6B6B', weight: 2, fillColor: '#fff', fillOpacity: .9,
+  }).bindTooltip(x.name).addTo(pickMap));
+  if (snap.lat != null) pickMap.setView([snap.lat, snap.lng], 15);
+  else if (pts.length) pickMap.fitBounds(L.latLngBounds(pts.map((x) => [x.lat, x.lng])).pad(0.2));
+  else pickMap.setView([35.681, 139.767], 5);
+  const icon = L.divIcon({
+    className: 'pin', html: '<div class="pin-in">📍</div>',
+    iconSize: [34, 34], iconAnchor: [17, 30],
+  });
+  let marker = null;
+  const setPos = (lat, lng) => {
+    pickCtx.lat = +(+lat).toFixed(6); pickCtx.lng = +(+lng).toFixed(6);
+    if (!marker) {
+      marker = L.marker([lat, lng], { icon, draggable: true }).addTo(pickMap);
+      marker.on('dragend', () => { const c = marker.getLatLng(); setPos(c.lat, c.lng); });
+    } else marker.setLatLng([lat, lng]);
+    const ok = $('#pick-map-ok'); if (ok) ok.disabled = false;
+  };
+  if (snap.lat != null) setPos(snap.lat, snap.lng);
+  pickMap.on('click', (e) => setPos(e.latlng.lat, e.latlng.lng));
+  setTimeout(() => pickMap && pickMap.invalidateSize(), 60);
 }
 
 /* ----- 場所追加メニュー ----- */
@@ -842,11 +890,37 @@ document.addEventListener('click', async (e) => {
         const r = S.geoResults[+el.dataset.i];
         const form = el.closest('form');
         if (r && form) {
-          form.dataset.lat = r.lat; form.dataset.lng = r.lng;
+          form.elements.coord.value = `${r.lat}, ${r.lng}`;
           if (!form.elements.name.value.trim()) form.elements.name.value = r.name;
-          $('#pos-badge').textContent = `✅ 取得済み（${r.lat}, ${r.lng}）`;
           $('#geo-results').innerHTML = `<p class="note">📍 「${esc(r.name)}」の位置を設定しました</p>`;
         }
+        break;
+      }
+      case 'pick-on-map': {
+        const form = el.closest('form');
+        const fdNow = new FormData(form);
+        const snap = {
+          name: (fdNow.get('name') || '').trim(),
+          cat: fdNow.get('cat') || 'spot',
+          memo: fdNow.get('memo') || '',
+          url: (fdNow.get('url') || '').trim(),
+          lat: null, lng: null,
+        };
+        const cm = (fdNow.get('coord') || '').match(/(-?\d+(?:\.\d+)?)[\s,，、]+(-?\d+(?:\.\d+)?)/);
+        if (cm) { snap.lat = +cm[1]; snap.lng = +cm[2]; }
+        const editing = form.dataset.id ? S.places.find((x) => x.id === form.dataset.id) : null;
+        openMapPickSheet(editing || null, snap);
+        break;
+      }
+      case 'pick-map-ok': {
+        if (pickCtx && pickCtx.lat != null) {
+          openPlaceSheet(pickCtx.place, { ...pickCtx.snap, lat: pickCtx.lat, lng: pickCtx.lng });
+        }
+        break;
+      }
+      case 'pick-map-cancel': {
+        if (pickCtx) openPlaceSheet(pickCtx.place, pickCtx.snap);
+        else closeSheet();
         break;
       }
 
@@ -972,13 +1046,27 @@ document.addEventListener('submit', async (e) => {
     }
 
     if (form.id === 'form-place') {
+      // 座標欄の読み取り：「緯度, 経度」の直書き、またはGoogleマップURLの貼り付けに対応
+      const coordRaw = (fd.get('coord') || '').trim();
+      let lat = null, lng = null;
+      if (coordRaw) {
+        if (/^https?:|\//.test(coordRaw)) {
+          const pp = parseGmapsUrl(coordRaw);
+          lat = pp.lat; lng = pp.lng;
+        } else {
+          const m = coordRaw.match(/^(-?\d+(?:\.\d+)?)[\s,，、]+(-?\d+(?:\.\d+)?)$/);
+          if (m) { lat = +m[1]; lng = +m[2]; }
+        }
+        if (lat == null || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+          toast('座標を読み取れませんでした（例：36.5624, 136.6623）'); return;
+        }
+      }
       const data = {
         name: fd.get('name').trim(),
         cat: fd.get('cat') || 'spot',
         memo: (fd.get('memo') || '').trim(),
         url: (fd.get('url') || '').trim(),
-        lat: form.dataset.lat !== '' ? +form.dataset.lat : null,
-        lng: form.dataset.lng !== '' ? +form.dataset.lng : null,
+        lat, lng,
       };
       const pid = form.dataset.id;
       if (pid) await store.updatePlace(t.id, pid, data);
