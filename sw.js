@@ -1,5 +1,5 @@
 // たびとも Service Worker — オフライン時もアプリの外枠を表示できるようにする
-const CACHE = 'tabitomo-v1';
+const CACHE = 'tabitomo-v2';
 const SHELL = [
   './',
   'index.html',
@@ -8,7 +8,9 @@ const SHELL = [
   'js/store.js',
   'js/tz.js',
   'js/gmaps.js',
+  'js/gmap-view.js',
   'js/firebase-config.js',
+  'js/maps-config.js',
   'manifest.webmanifest',
 ];
 

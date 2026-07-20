@@ -291,6 +291,7 @@ a { color: var(--primary-deep); }
 .mapbox {
   height: min(62dvh, 520px); border-radius: var(--radius);
   border: 3px solid #fff; box-shadow: var(--shadow); z-index: 1;
+  overflow: hidden;
 }
 .map-hint { font-size: 12px; color: var(--ink-soft); text-align: center; margin-top: 8px; font-weight: 700; }
 .pickmap { height: min(46dvh, 380px); }
@@ -303,6 +304,12 @@ a { color: var(--primary-deep); }
 }
 .leaflet-popup-content { font-family: inherit; margin: 10px 12px; }
 .pop b { display: block; margin-bottom: 6px; }
+/* Googleマップ用：吹き出しのフォント統一と、位置指定ピッカーの目印ドット */
+.gm-style .pop { font-family: 'M PLUS Rounded 1c', system-ui, sans-serif; padding: 4px 4px 2px; }
+.pick-dot {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; border: 3px solid #FF6B6B; box-shadow: 0 1px 4px rgba(0, 0, 0, .25);
+}
 
 /* ---------- せってい ---------- */
 .settings { display: flex; flex-direction: column; gap: 14px; }

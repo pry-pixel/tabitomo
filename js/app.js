@@ -7,6 +7,7 @@ import {
 import {
   parseGmapsUrl, resolveGmapsPage, geocode, parseTakeoutCsv, gmapsSearchUrl,
 } from './gmaps.js';
+import { gmapReady, loadGmap, gplacesSearch } from './gmap-view.js';
 
 /* ---------------- 定数 ---------------- */
 const CATS = [
@@ -496,19 +497,74 @@ function renderSettingsTab(t, overseas) {
 
 /* ---------------- 地図 ---------------- */
 function destroyMap() {
-  if (map) { try { map.remove(); } catch { } map = null; mapMarkers = []; }
+  // Leafletは remove() で破棄。Googleマップは参照を捨てるだけでよい（remove メソッドを持たない）
+  if (map && typeof map.remove === 'function') { try { map.remove(); } catch { } }
+  map = null; mapMarkers = [];
 }
-function initMap() {
+function placePopHtml(p) {
+  return `
+    <div class="pop">
+      <b>${esc(p.name)}</b>
+      <div class="row gap">
+        <button class="chip" data-action="place-to-plan" data-id="${esc(p.id)}">📖 予定に入れる</button>
+        <button class="chip" data-action="open-gmap" data-id="${esc(p.id)}">🗺️ Gマップ</button>
+      </div>
+    </div>`;
+}
+async function initMap() {
   const el = $('#map');
-  if (!el || typeof L === 'undefined') return;
+  if (!el) return;
   destroyMap();
+  const pts = S.places.filter((p) => p.lat != null && p.lng != null);
+  if (gmapReady()) {
+    try { await initMapG(el, pts); return; } catch (err) { console.warn('Googleマップを読み込めないため、OpenStreetMapで表示します', err); }
+  }
+  initMapL(el, pts);
+}
+async function initMapG(el, pts) {
+  await loadGmap();
+  const { Map, InfoWindow } = await google.maps.importLibrary('maps');
+  const { AdvancedMarkerElement } = await google.maps.importLibrary('marker');
+  if (!el.isConnected) return; // 読み込み待ちの間に画面が切り替わった
+  const m = new Map(el, {
+    mapId: window.TABITOMO_MAPS.mapId || 'DEMO_MAP_ID',
+    center: S.mapState ? S.mapState.center : { lat: 35.681, lng: 139.767 },
+    zoom: S.mapState ? S.mapState.zoom : 5,
+    disableDoubleClickZoom: true,
+    gestureHandling: 'greedy',
+    fullscreenControl: false, streetViewControl: false, mapTypeControl: false,
+  });
+  map = m;
+  const iw = new InfoWindow();
+  pts.forEach((p) => {
+    const c = catOf(p.cat);
+    const pin = document.createElement('div');
+    pin.className = 'pin';
+    pin.innerHTML = `<div class="pin-in cat-${esc(p.cat || 'star')}">${c.e}</div>`;
+    const mk = new AdvancedMarkerElement({ map: m, position: { lat: p.lat, lng: p.lng }, content: pin, title: p.name });
+    mk.addListener('click', () => { iw.setContent(placePopHtml(p)); iw.open({ map: m, anchor: mk }); });
+    mapMarkers.push(mk);
+  });
+  if (!S.mapState && pts.length === 1) {
+    m.setCenter({ lat: pts[0].lat, lng: pts[0].lng }); m.setZoom(14);
+  } else if (!S.mapState && pts.length) {
+    const b = new google.maps.LatLngBounds();
+    pts.forEach((p) => b.extend({ lat: p.lat, lng: p.lng }));
+    m.fitBounds(b, 40);
+  }
+  m.addListener('idle', () => { S.mapState = { center: m.getCenter().toJSON(), zoom: m.getZoom() }; });
+  m.addListener('dblclick', (ev) => {
+    if (ev.latLng) openPlaceSheet(null, { lat: +ev.latLng.lat().toFixed(6), lng: +ev.latLng.lng().toFixed(6) });
+  });
+}
+function initMapL(el, pts) {
+  if (typeof L === 'undefined') return;
   map = L.map(el, { zoomControl: true, doubleClickZoom: false });
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; OpenStreetMap contributors',
   }).addTo(map);
 
-  const pts = S.places.filter((p) => p.lat != null && p.lng != null);
   pts.forEach((p) => {
     const c = catOf(p.cat);
     const icon = L.divIcon({
@@ -517,14 +573,7 @@ function initMap() {
       iconSize: [34, 34], iconAnchor: [17, 30],
     });
     const m = L.marker([p.lat, p.lng], { icon }).addTo(map);
-    m.bindPopup(`
-      <div class="pop">
-        <b>${esc(p.name)}</b>
-        <div class="row gap">
-          <button class="chip" data-action="place-to-plan" data-id="${esc(p.id)}">📖 予定に入れる</button>
-          <button class="chip" data-action="open-gmap" data-id="${esc(p.id)}">🗺️ Gマップ</button>
-        </div>
-      </div>`);
+    m.bindPopup(placePopHtml(p));
     mapMarkers.push(m);
   });
 
@@ -698,14 +747,67 @@ function openMapPickSheet(place, snap) {
   <p class="map-hint">地図をタップしてピンを置いてください（ピンはドラッグでも動かせます）</p>
   <button class="btn btn-primary btn-block" id="pick-map-ok" data-action="pick-map-ok" ${snap.lat != null ? '' : 'disabled'}>この位置にする</button>`);
   pickCtx = { place, snap, lat: snap.lat, lng: snap.lng };
-  if (typeof L === 'undefined') return;
+  // まわりの場所を薄く表示して目印にする
+  const pts = S.places.filter((x) => x.lat != null && x.lng != null && (!place || x.id !== place.id));
+  if (gmapReady()) {
+    initPickG(pts, snap).catch((err) => { console.warn('Googleマップを読み込めないため、OpenStreetMapで表示します', err); initPickL(pts, snap); });
+  } else {
+    initPickL(pts, snap);
+  }
+}
+// 選んだ座標を pickCtx に反映し、決定ボタンを押せるようにする（両バックエンド共通）
+function pickSetCtx(lat, lng) {
+  pickCtx.lat = +(+lat).toFixed(6); pickCtx.lng = +(+lng).toFixed(6);
+  const ok = $('#pick-map-ok'); if (ok) ok.disabled = false;
+}
+async function initPickG(pts, snap) {
+  await loadGmap();
+  const { Map } = await google.maps.importLibrary('maps');
+  const { AdvancedMarkerElement } = await google.maps.importLibrary('marker');
+  const el = $('#pickmap');
+  if (!el || !el.isConnected) return; // 読み込み待ちの間にシートが閉じられた
+  const m = new Map(el, {
+    mapId: window.TABITOMO_MAPS.mapId || 'DEMO_MAP_ID',
+    center: snap.lat != null ? { lat: snap.lat, lng: snap.lng } : { lat: 35.681, lng: 139.767 },
+    zoom: snap.lat != null ? 15 : 5,
+    disableDoubleClickZoom: true,
+    gestureHandling: 'greedy',
+    clickableIcons: false, // 店アイコンのタップもピン設置として扱う
+    fullscreenControl: false, streetViewControl: false, mapTypeControl: false,
+  });
+  pickMap = m;
+  pts.forEach((x) => {
+    const dot = document.createElement('div');
+    dot.className = 'pick-dot';
+    dot.title = x.name;
+    new AdvancedMarkerElement({ map: m, position: { lat: x.lat, lng: x.lng }, content: dot, title: x.name });
+  });
+  if (snap.lat == null && pts.length) {
+    const b = new google.maps.LatLngBounds();
+    pts.forEach((x) => b.extend({ lat: x.lat, lng: x.lng }));
+    m.fitBounds(b, 40);
+  }
+  let marker = null;
+  const setPos = (lat, lng) => {
+    pickSetCtx(lat, lng);
+    if (!marker) {
+      const pin = document.createElement('div');
+      pin.className = 'pin';
+      pin.innerHTML = '<div class="pin-in">📍</div>';
+      marker = new AdvancedMarkerElement({ map: m, position: { lat: +lat, lng: +lng }, content: pin, gmpDraggable: true });
+      marker.addListener('dragend', (ev) => { if (ev.latLng) setPos(ev.latLng.lat(), ev.latLng.lng()); });
+    } else marker.position = { lat: +lat, lng: +lng };
+  };
+  if (snap.lat != null) setPos(snap.lat, snap.lng);
+  m.addListener('click', (ev) => { if (ev.latLng) setPos(ev.latLng.lat(), ev.latLng.lng()); });
+}
+function initPickL(pts, snap) {
+  if (typeof L === 'undefined' || !$('#pickmap')) return;
   pickMap = L.map('pickmap', { doubleClickZoom: false });
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; OpenStreetMap contributors',
   }).addTo(pickMap);
-  // まわりの場所を薄く表示して目印にする
-  const pts = S.places.filter((x) => x.lat != null && x.lng != null && (!place || x.id !== place.id));
   pts.forEach((x) => L.circleMarker([x.lat, x.lng], {
     radius: 6, color: '#FF6B6B', weight: 2, fillColor: '#fff', fillOpacity: .9,
   }).bindTooltip(x.name).addTo(pickMap));
@@ -718,12 +820,11 @@ function openMapPickSheet(place, snap) {
   });
   let marker = null;
   const setPos = (lat, lng) => {
-    pickCtx.lat = +(+lat).toFixed(6); pickCtx.lng = +(+lng).toFixed(6);
+    pickSetCtx(lat, lng);
     if (!marker) {
       marker = L.marker([lat, lng], { icon, draggable: true }).addTo(pickMap);
       marker.on('dragend', () => { const c = marker.getLatLng(); setPos(c.lat, c.lng); });
     } else marker.setLatLng([lat, lng]);
-    const ok = $('#pick-map-ok'); if (ok) ok.disabled = false;
   };
   if (snap.lat != null) setPos(snap.lat, snap.lng);
   pickMap.on('click', (e) => setPos(e.latlng.lat, e.latlng.lng));
@@ -874,8 +975,17 @@ document.addEventListener('click', async (e) => {
         el.disabled = true; el.textContent = '検索中…';
         try {
           const dest = t && t.dest ? ' ' + t.dest : '';
-          let res = await geocode(q + dest);
-          if (!res.length && dest) res = await geocode(q);
+          let res = null;
+          if (gmapReady()) {
+            try {
+              res = await gplacesSearch(q + dest);
+              if (!res.length && dest) res = await gplacesSearch(q);
+            } catch { res = null; } // Google側の失敗時はOSM検索に切り替え
+          }
+          if (!res) {
+            res = await geocode(q + dest);
+            if (!res.length && dest) res = await geocode(q);
+          }
           S.geoResults = res;
           const box = $('#geo-results');
           box.innerHTML = res.length
@@ -1201,6 +1311,12 @@ async function photonFind(q, destCenter) {
 // 行き先の中心座標（誤ヒット除外の距離チェック用）を一度だけ取得
 async function destCenterOf(dest) {
   if (!dest) return null;
+  if (gmapReady()) {
+    try {
+      const r = await gplacesSearch(dest);
+      if (r.length) return { lat: r[0].lat, lng: r[0].lng };
+    } catch { /* OSM検索へ */ }
+  }
   try {
     const r = await geocode(dest);
     await sleep(1100);
@@ -1209,6 +1325,15 @@ async function destCenterOf(dest) {
 }
 
 async function findCoords(name, url, dest, sess = {}) {
+  // ⓪ Googleの場所検索（APIキー設定時）。小さな店でも見つかる精度が最も高い
+  if (name && gmapReady()) {
+    try {
+      const dc = sess.destCenter || null;
+      const res = await gplacesSearch(dest ? `${name} ${dest}` : name, dc);
+      const hit = res.find((r) => !dc || distKm(r, dc) < 150); // 行き先から遠すぎる同名他店は除外
+      if (hit) return { lat: hit.lat, lng: hit.lng };
+    } catch { /* 失敗時は従来の検索へ */ }
+  }
   // ① Googleマップリンクの先のページから座標を抜き出す（成功すれば最も正確。
   //    ただしGoogle側が取得をブロックすることが多いため、連続失敗後は省略する）
   if (url && /google|goo\.gl/.test(url) && (sess.urlFails || 0) < 2) {
@@ -1270,6 +1395,10 @@ async function bulkFixPositions() {
 async function boot() {
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch(() => { });
+  }
+  // GoogleマップのAPIキーが無効・制限違反のとき Google が呼ぶ公式フック
+  if (gmapReady()) {
+    window.gm_authFailure = () => toast('GoogleマップのAPIキーを確認できませんでした（キーと制限設定を見直してください）', 4200);
   }
   store = await initStore(() => {
     // uidが変わったら購読し直す
