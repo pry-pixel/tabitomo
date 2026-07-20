@@ -539,10 +539,11 @@ function initMap() {
 }
 
 /* ---------------- シート（モーダル） ---------------- */
-function openSheet(html) {
+function openSheet(html, opts = {}) {
   const wrap = $('#sheets');
+  // 入力フォームは誤タップで消えないよう、背景タップでは閉じない（dismissible指定時のみ閉じる）
   wrap.innerHTML = `
-    <div class="backdrop" data-action="close-sheet"></div>
+    <div class="backdrop"${opts.dismissible ? ' data-action="close-sheet"' : ''}></div>
     <div class="sheet">${html}</div>`;
   document.body.classList.add('sheet-open');
 }
@@ -690,7 +691,7 @@ function openPlaceMenu() {
       <span><b>Googleマップのリンクから</b><small>「共有」→「リンクをコピー」を貼り付け</small></span></button>
     <button class="menu-item" data-action="add-place-csv"><span>📄</span>
       <span><b>保存リストをまとめて取り込み</b><small>Google TakeoutのCSVファイル</small></span></button>
-  </div>`);
+  </div>`, { dismissible: true });
 }
 
 /* ----- リンク取り込みシート ----- */
