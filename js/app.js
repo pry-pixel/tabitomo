@@ -5,7 +5,7 @@ import {
   fmtDateLong, tripDays, todayStr, diffDays,
 } from './tz.js';
 import {
-  parseGmapsUrl, isShortLink, resolveShortLink, geocode, parseTakeoutCsv, gmapsSearchUrl,
+  parseGmapsUrl, resolveGmapsPage, geocode, parseTakeoutCsv, gmapsSearchUrl,
 } from './gmaps.js';
 
 /* ---------------- 定数 ---------------- */
@@ -418,6 +418,9 @@ function renderPlacesTab(t) {
       <button class="seg-btn ${S.placeView === 'list' ? 'on' : ''}" data-action="placeview" data-v="list">リスト（${list.length}）</button>
       <button class="seg-btn ${S.placeView === 'map' ? 'on' : ''}" data-action="placeview" data-v="map">地図（${withPos.length}）</button>
     </div>
+    ${S.placeView === 'list' && list.length > withPos.length ? (S.bulkFix && S.bulkFix.tripId === t.id
+      ? `<div class="card bulkfix"><p class="note">📡 位置情報を補完中… ${S.bulkFix.done}/${S.bulkFix.total}（このまま少しお待ちください）</p></div>`
+      : `<button class="btn btn-block" data-action="bulk-fix-pos">📡 位置情報なし ${list.length - withPos.length}件をまとめて補完</button>`) : ''}
     ${S.placeView === 'list' ? `<div class="place-list">${cards}</div>`
       : `<div id="map" class="mapbox"></div>
          <p class="map-hint">地図を長押し（ダブルタップ）すると、その地点を場所として追加できます</p>`}
@@ -814,6 +817,7 @@ document.addEventListener('click', async (e) => {
         if (p) window.open(gmapsSearchUrl(p), '_blank', 'noopener');
         break;
       }
+      case 'bulk-fix-pos': bulkFixPositions(); break;
 
       case 'geo-search': {
         const form = el.closest('form');
@@ -987,8 +991,8 @@ document.addEventListener('submit', async (e) => {
       const status = $('#link-status');
       status.innerHTML = '<p class="note">読み取り中…</p>';
       let parsed = parseGmapsUrl(raw);
-      if ((parsed.lat == null || !parsed.name) && isShortLink(raw)) {
-        const resolved = await resolveShortLink(raw);
+      if ((parsed.lat == null || !parsed.name) && /google|goo\.gl/.test(raw)) {
+        const resolved = await resolveGmapsPage(raw);
         if (resolved) {
           parsed = {
             name: parsed.name || resolved.name,
@@ -1026,14 +1030,12 @@ async function importCsv(btn) {
   btn.disabled = true;
   const rows = [...S.csv];
   let done = 0;
+  const sess = doGeo ? { urlFails: 0, destCenter: await destCenterOf(S.trip.dest) } : {};
   for (const r of rows) {
     let { lat, lng } = r;
     if (lat == null && doGeo) {
-      try {
-        const res = await geocode(r.name + (S.trip.dest ? ' ' + S.trip.dest : ''));
-        if (res.length) { lat = res[0].lat; lng = res[0].lng; }
-        await sleep(1100); // Nominatimの利用ポリシー（1リクエスト/秒）
-      } catch { }
+      const c = await findCoords(r.name, r.url, S.trip.dest, sess);
+      if (c) { lat = c.lat; lng = c.lng; }
     }
     await store.addPlace(S.trip.id, {
       name: r.name, memo: r.memo || '', cat: 'spot', url: r.url || '', lat, lng,
@@ -1043,6 +1045,137 @@ async function importCsv(btn) {
   }
   closeSheet();
   toast(`${done}件のばしょを取り込みました！🎉`);
+}
+
+/* ----- 座標の補完（リンク先ページ → 名前検索の順で試す） ----- */
+
+// 2点間のおおよその距離(km)
+function distKm(a, b) {
+  const d = Math.PI / 180;
+  const x = (b.lng - a.lng) * d * Math.cos(((a.lat + b.lat) / 2) * d);
+  const y = (b.lat - a.lat) * d;
+  return Math.sqrt(x * x + y * y) * 6371;
+}
+
+// 検索ワードの候補を作る（そのまま → 括弧を除いた形 → 括弧の中身 → 最後の語）
+function nameVariants(name, dest) {
+  const base = (name || '').trim();
+  const cores = [];
+  const push = (s) => { s = s.replace(/\s+/g, ' ').trim(); if (s.length >= 2 && !cores.includes(s)) cores.push(s); };
+  push(base);
+  const noParen = base.replace(/[（(][^（）()]*[）)]/g, ' ');
+  push(noParen);
+  const parenIn = (base.match(/[（(]([^（）()]+)[）)]/) || [])[1];
+  if (parenIn) push(parenIn);
+  const toks = noParen.replace(/\s+/g, ' ').trim().split(' ');
+  if (toks.length > 1) push(toks[toks.length - 1]);
+  const out = [];
+  for (const c of cores.slice(0, 3)) out.push({ q: dest ? `${c} ${dest}` : c, core: c, withDest: !!dest });
+  if (dest) for (const c of cores.slice(0, 1)) out.push({ q: c, core: c, withDest: false });
+  return out;
+}
+
+// 検索結果から「本当にその場所らしいもの」を選ぶ（名前の一致＋行き先からの距離で判定）
+function pickHit(res, core, withDest, destCenter) {
+  const norm = (s) => (s || '').replace(/[\s・]/g, '');
+  const target = norm(core);
+  const hits = res.filter((r) => {
+    const rn = norm(r.name);
+    return rn.includes(target) || norm(r.full).includes(target) || (rn.length >= 2 && target.includes(rn));
+  });
+  if (!hits.length) return null;
+  if (destCenter) {
+    hits.sort((a, b) => distKm(a, destCenter) - distKm(b, destCenter));
+    const best = hits[0];
+    if (withDest || hits.length === 1 || distKm(best, destCenter) < 150) return best;
+    return null;
+  }
+  return hits[0];
+}
+
+// あいまい検索（Photon / OpenStreetMapデータ）。表記ゆれに強い最後のひと押し
+async function photonFind(q, destCenter) {
+  let u = `https://photon.komoot.io/api/?limit=3&q=${encodeURIComponent(q)}`;
+  if (destCenter) u += `&lat=${destCenter.lat}&lon=${destCenter.lng}`;
+  const res = await fetch(u);
+  if (!res.ok) return null;
+  const js = await res.json();
+  const norm = (s) => (s || '').replace(/[\s・]/g, '');
+  for (const f of (js.features || [])) {
+    const c = { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] };
+    const nm = norm(f.properties && f.properties.name);
+    const okName = nm && (nm.includes(norm(q)) || norm(q).includes(nm));
+    if (destCenter ? distKm(c, destCenter) < 150 : okName) return c;
+  }
+  return null;
+}
+
+// 行き先の中心座標（誤ヒット除外の距離チェック用）を一度だけ取得
+async function destCenterOf(dest) {
+  if (!dest) return null;
+  try {
+    const r = await geocode(dest);
+    await sleep(1100);
+    return r.length ? { lat: r[0].lat, lng: r[0].lng } : null;
+  } catch { return null; }
+}
+
+async function findCoords(name, url, dest, sess = {}) {
+  // ① Googleマップリンクの先のページから座標を抜き出す（成功すれば最も正確。
+  //    ただしGoogle側が取得をブロックすることが多いため、連続失敗後は省略する）
+  if (url && /google|goo\.gl/.test(url) && (sess.urlFails || 0) < 2) {
+    try {
+      const r = await resolveGmapsPage(url);
+      if (r && r.lat != null) { sess.urlFails = 0; await sleep(300); return { lat: r.lat, lng: r.lng }; }
+    } catch { }
+    sess.urlFails = (sess.urlFails || 0) + 1;
+  }
+  if (!name) return null;
+  const dc = sess.destCenter || null;
+  // ② 名前のバリエーションでOpenStreetMap検索
+  for (const v of nameVariants(name, dest)) {
+    try {
+      const res = await geocode(v.q);
+      const hit = pickHit(res, v.core, v.withDest, dc);
+      if (hit) return { lat: hit.lat, lng: hit.lng };
+    } catch { }
+    await sleep(1100); // Nominatimの利用ポリシー（1リクエスト/秒）
+  }
+  // ③ あいまい検索
+  try {
+    const cores = nameVariants(name, '');
+    return await photonFind((cores[0] && cores[0].core) || name, dc);
+  } catch { return null; }
+}
+
+/* ----- 位置情報なしの一括補完 ----- */
+async function bulkFixPositions() {
+  if (S.bulkFix || !S.trip) return;
+  const tripId = S.trip.id;
+  const dest = S.trip.dest || '';
+  const targets = S.places.filter((p) => p.lat == null);
+  if (!targets.length) return;
+  S.bulkFix = { tripId, done: 0, total: targets.length };
+  render();
+  const sess = { urlFails: 0, destCenter: await destCenterOf(dest) };
+  let ok = 0;
+  try {
+    for (const p of targets) {
+      const c = await findCoords(p.name, p.url, dest, sess);
+      if (c) {
+        try { await store.updatePlace(tripId, p.id, { lat: c.lat, lng: c.lng }); ok++; } catch { }
+      }
+      S.bulkFix.done++;
+      render();
+    }
+  } finally {
+    S.bulkFix = null;
+    render();
+  }
+  const miss = targets.length - ok;
+  toast(ok
+    ? `${ok}件の位置がわかりました！🎉${miss ? `（残り${miss}件は見つからず）` : ''}`
+    : '位置を見つけられませんでした。場所を開いて、言葉を変えて検索してみてください');
 }
 
 /* ---------------- 起動 ---------------- */

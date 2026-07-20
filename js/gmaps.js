@@ -34,12 +34,9 @@ export function parseGmapsUrl(raw) {
   return out;
 }
 
-export function isShortLink(url) {
-  return /(maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/kgs)/.test(url || '');
-}
-
-// 短縮リンク（maps.app.goo.gl）の解決を試みる（CORSプロキシ経由・ベストエフォート）
-export async function resolveShortLink(url) {
+// GoogleマップURLの先のページを取得して 名前・座標 を抜き出す（CORSプロキシ経由・ベストエフォート）
+// 短縮リンク（maps.app.goo.gl）にも通常の /maps/place/ リンクにも使える
+export async function resolveGmapsPage(url) {
   const targets = [
     `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
     `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
@@ -70,6 +67,11 @@ export async function resolveShortLink(url) {
           if (p.lat != null) { out.lat = p.lat; out.lng = p.lng; }
           if (!out.name && p.name) out.name = p.name;
         }
+      }
+      // og:image の静的地図URL（center=lat%2Clng）からの抽出
+      if (out.lat == null) {
+        const centerM = html.match(/center=(-?\d+\.\d+)%2C(-?\d+\.\d+)/);
+        if (centerM) { out.lat = +centerM[1]; out.lng = +centerM[2]; }
       }
       if (out.lat != null || out.name) return out;
     } catch { /* 次のプロキシへ */ }
