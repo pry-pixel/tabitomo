@@ -1,0 +1,33 @@
+rules_version = '2';
+// たびとも用 Firestoreセキュリティルール
+// Firebaseコンソール → Firestore Database → ルール にそのまま貼り付けて「公開」してください。
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 自分の旅行一覧（本人のみ読み書き可）
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // 旅行本体
+    match /trips/{tripId} {
+      // IDを知っている人だけが取得できる（一覧の取得は不可＝IDが実質の合鍵）
+      allow get: if request.auth != null &&
+        (resource.data.isShared == true || resource.data.ownerUid == request.auth.uid);
+      allow list: if false;
+      allow create: if request.auth != null &&
+        request.resource.data.ownerUid == request.auth.uid;
+      allow update: if request.auth != null &&
+        (resource.data.isShared == true || resource.data.ownerUid == request.auth.uid) &&
+        request.resource.data.ownerUid == resource.data.ownerUid;
+      allow delete: if request.auth != null && resource.data.ownerUid == request.auth.uid;
+
+      // 予定・ばしょ・メンバー（共有中なら誰でも、非共有なら作成者のみ）
+      match /{sub}/{docId} {
+        allow read, write: if request.auth != null &&
+          (get(/databases/$(database)/documents/trips/$(tripId)).data.isShared == true ||
+           get(/databases/$(database)/documents/trips/$(tripId)).data.ownerUid == request.auth.uid);
+      }
+    }
+  }
+}
