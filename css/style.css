@@ -254,7 +254,7 @@ a { color: var(--primary-deep); }
 }
 .ev:active .ev-card { transform: scale(.985); }
 .ev-title { font-weight: 800; font-size: 15.5px; }
-.ev-place { font-size: 12.5px; color: var(--primary-deep); font-weight: 700; margin-top: 2px; }
+.ev-place { display: inline-block; font-size: 12.5px; color: var(--primary-deep); font-weight: 700; margin-top: 2px; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
 .ev-memo { font-size: 13px; color: var(--ink-soft); white-space: pre-wrap; margin-top: 4px; }
 .ev-url { font-size: 12.5px; font-weight: 700; display: inline-block; margin-top: 4px; }
 

@@ -363,7 +363,7 @@ function renderPlanTab(t, overseas) {
       <div class="ev-line"><span class="ev-dot cat-${esc(ev.cat || 'star')}">${c.e}</span></div>
       <div class="ev-card">
         <div class="ev-title">${esc(ev.title)}</div>
-        ${place ? `<div class="ev-place">📍 ${esc(place.name)}</div>` : ''}
+        ${place ? `<a class="ev-place" href="${esc(gmapsSearchUrl(place))}" target="_blank" rel="noopener" onclick="event.stopPropagation()">📍 ${esc(place.name)}</a>` : ''}
         ${ev.memo ? `<div class="ev-memo">${esc(ev.memo)}</div>` : ''}
         ${ev.url ? `<a class="ev-url" href="${esc(ev.url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">🔗 リンクを開く</a>` : ''}
       </div>
