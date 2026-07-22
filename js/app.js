@@ -48,6 +48,7 @@ const S = {
   trips: [],
   trip: null, events: [], places: [], members: {},
   day: null, timeView: 'local', placeView: 'list',
+  memoOpen: new Set(),
   geoResults: [], csv: null,
   mapState: null,
   loading: true,
@@ -206,10 +207,33 @@ function render() {
 }
 
 function afterRender() {
+  syncMemoToggles();
   if (S.route.view === 'trip' && S.route.tab === 'places' && S.placeView === 'map') {
     initMap();
   }
 }
+
+/* 長いメモの折りたたみ：あふれているメモだけに「つづきを見る」を出す（描画後に実測） */
+function evMemoHtml(ev) {
+  const open = S.memoOpen.has(ev.id);
+  return `<div class="ev-memo ${open ? '' : 'clamp'}">${esc(ev.memo)}</div>
+        <button class="memo-toggle" data-action="toggle-memo" data-id="${esc(ev.id)}" hidden>${open ? '▲ たたむ' : '▼ つづきを見る'}</button>`;
+}
+function syncMemoToggles() {
+  document.querySelectorAll('.ev-card .ev-memo').forEach((el) => {
+    const btn = el.nextElementSibling;
+    if (!btn || !btn.classList.contains('memo-toggle')) return;
+    if (el.classList.contains('clamp')) {
+      const over = el.scrollHeight > el.clientHeight + 2;
+      if (!over) el.classList.remove('clamp'); // 収まるメモはフェードも外す
+      btn.hidden = !over;
+    } else {
+      btn.hidden = false; // 展開中は「たたむ」を常に表示
+    }
+  });
+}
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => syncMemoToggles());
+window.addEventListener('resize', () => syncMemoToggles());
 
 /* ----- ホーム ----- */
 function renderHome() {
@@ -366,7 +390,7 @@ function renderPlanTab(t, overseas) {
       <div class="ev-card">
         <div class="ev-title">${esc(ev.title)}</div>
         ${place ? `<a class="ev-place" href="${esc(gmapsSearchUrl(place))}" target="_blank" rel="noopener" onclick="event.stopPropagation()">📍 ${esc(place.name)}</a>` : ''}
-        ${ev.memo ? `<div class="ev-memo">${esc(ev.memo)}</div>` : ''}
+        ${ev.memo ? evMemoHtml(ev) : ''}
         ${ev.url ? `<a class="ev-url" href="${esc(ev.url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">🔗 リンクを開く</a>` : ''}
       </div>
     </div>`;
@@ -915,6 +939,10 @@ document.addEventListener('click', async (e) => {
       case 'tab': nav(`/trip/${t.id}/${el.dataset.tab}`); break;
       case 'day': S.day = el.dataset.date; render(); break;
       case 'timeview': S.timeView = el.dataset.v; render(); break;
+      case 'toggle-memo':
+        if (S.memoOpen.has(id)) S.memoOpen.delete(id); else S.memoOpen.add(id);
+        render();
+        break;
       case 'placeview': S.placeView = el.dataset.v; render(); break;
       case 'close-sheet': closeSheet(); break;
 
